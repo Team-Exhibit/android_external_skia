@@ -36,22 +36,73 @@ SkTypeface::~SkTypeface() {
 
 ///////////////////////////////////////////////////////////////////////////////
 
+class SkEmptyTypeface : public SkTypeface {
+public:
+    SkEmptyTypeface() : SkTypeface(SkTypeface::kNormal, 0, true) { }
+protected:
+    virtual SkStream* onOpenStream(int* ttcIndex) const SK_OVERRIDE { return NULL; }
+    virtual SkScalerContext* onCreateScalerContext(const SkDescriptor*) const SK_OVERRIDE {
+        return NULL;
+    }
+    virtual void onFilterRec(SkScalerContextRec*) const SK_OVERRIDE { }
+    virtual SkAdvancedTypefaceMetrics* onGetAdvancedTypefaceMetrics(
+                                SkAdvancedTypefaceMetrics::PerGlyphInfo,
+                                const uint32_t*, uint32_t) const SK_OVERRIDE { return NULL; }
+    virtual void onGetFontDescriptor(SkFontDescriptor*, bool*) const SK_OVERRIDE { }
+    virtual int onCharsToGlyphs(const void* chars, Encoding encoding,
+                                uint16_t glyphs[], int glyphCount) const SK_OVERRIDE {
+        if (glyphs && glyphCount > 0) {
+            sk_bzero(glyphs, glyphCount * sizeof(glyphs[0]));
+        }
+        return 0;
+    }
+    virtual int onCountGlyphs() const SK_OVERRIDE { return 0; };
+    virtual int onGetUPEM() const SK_OVERRIDE { return 0; };
+    class EmptyLocalizedStrings : public SkTypeface::LocalizedStrings {
+    public:
+        virtual bool next(SkTypeface::LocalizedString*) SK_OVERRIDE { return false; }
+    };
+    virtual SkTypeface::LocalizedStrings* onCreateFamilyNameIterator() const SK_OVERRIDE {
+        return SkNEW(EmptyLocalizedStrings);
+    };
+    virtual int onGetTableTags(SkFontTableTag tags[]) const SK_OVERRIDE { return 0; }
+    virtual size_t onGetTableData(SkFontTableTag, size_t, size_t, void*) const SK_OVERRIDE {
+        return 0;
+    }
+};
+
+SK_DECLARE_STATIC_MUTEX(gMutex);
+static const uint32_t FONT_STYLE_COUNT = 4;
+static SkTypeface* gDefaultTypefaces[FONT_STYLE_COUNT];
 SkTypeface* SkTypeface::GetDefaultTypeface(Style style) {
+    SkAutoMutexAcquire am(gMutex);
     // we keep a reference to this guy for all time, since if we return its
     // fontID, the font cache may later on ask to resolve that back into a
     // typeface object.
-    static const uint32_t FONT_STYLE_COUNT = 4;
-    static SkTypeface* gDefaultTypefaces[FONT_STYLE_COUNT];
     SkASSERT((unsigned)style < FONT_STYLE_COUNT);
 
     // mask off any other bits to avoid a crash in SK_RELEASE
     style = (Style)(style & 0x03);
 
     if (NULL == gDefaultTypefaces[style]) {
-        gDefaultTypefaces[style] =
-        SkFontHost::CreateTypeface(NULL, NULL, style);
+        gDefaultTypefaces[style] = SkFontHost::CreateTypeface(NULL, NULL, style);
     }
+    if (NULL == gDefaultTypefaces[style]) {
+        gDefaultTypefaces[style] = SkNEW(SkEmptyTypeface);
+    }
+
     return gDefaultTypefaces[style];
+}
+
+void SkTypeface::ClearCache() {
+    SkAutoMutexAcquire am(gMutex);
+    SkFontHost::ClearCache();
+    for(unsigned int i=0; i < FONT_STYLE_COUNT; i++) {
+       if (gDefaultTypefaces[i] != NULL) {
+           gDefaultTypefaces[i]->unref();
+           gDefaultTypefaces[i] = NULL;
+       }
+   }
 }
 
 SkTypeface* SkTypeface::RefDefault(Style style) {
@@ -194,6 +245,20 @@ int SkTypeface::getUnitsPerEm() const {
     return this->onGetUPEM();
 }
 
+bool SkTypeface::getKerningPairAdjustments(const uint16_t glyphs[], int count,
+                                           int32_t adjustments[]) const {
+    SkASSERT(count >= 0);
+    // check for the only legal way to pass a NULL.. everything is 0
+    // in which case they just want to know if this face can possibly support
+    // kerning (true) or never (false).
+    if (NULL == glyphs || NULL == adjustments) {
+        SkASSERT(NULL == glyphs);
+        SkASSERT(0 == count);
+        SkASSERT(NULL == adjustments);
+    }
+    return this->onGetKerningPairAdjustments(glyphs, count, adjustments);
+}
+
 SkTypeface::LocalizedStrings* SkTypeface::createFamilyNameIterator() const {
     return this->onCreateFamilyNameIterator();
 }
@@ -219,11 +284,7 @@ SkTypeface* SkTypeface::refMatchingStyle(Style style) const {
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-int SkTypeface::onCharsToGlyphs(const void* chars, Encoding encoding,
-                                uint16_t glyphs[], int glyphCount) const {
-    SkDebugf("onCharsToGlyphs unimplemented\n");
-    if (glyphs && glyphCount > 0) {
-        sk_bzero(glyphs, glyphCount * sizeof(glyphs[0]));
-    }
-    return 0;
+bool SkTypeface::onGetKerningPairAdjustments(const uint16_t glyphs[], int count,
+                                             int32_t adjustments[]) const {
+    return false;
 }

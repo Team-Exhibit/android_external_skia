@@ -13,11 +13,26 @@
 
 #define TYPEFACE_CACHE_LIMIT    1024
 
+SkTypefaceCache::SkTypefaceCache() {}
+
+SkTypefaceCache::~SkTypefaceCache() {
+    const Rec* curr = fArray.begin();
+    const Rec* stop = fArray.end();
+    while (curr < stop) {
+        if (curr->fStrong) {
+            curr->fFace->unref();
+        } else {
+            curr->fFace->weak_unref();
+        }
+        curr += 1;
+    }
+}
+
 void SkTypefaceCache::add(SkTypeface* face,
                           SkTypeface::Style requestedStyle,
                           bool strong) {
     if (fArray.count() >= TYPEFACE_CACHE_LIMIT) {
-        this->purge(TYPEFACE_CACHE_LIMIT >> 2);
+        this->purge(TYPEFACE_CACHE_LIMIT >> 2, false);
     }
 
     Rec* rec = fArray.append();
@@ -63,13 +78,13 @@ SkTypeface* SkTypefaceCache::findByProcAndRef(FindProc proc, void* ctx) const {
     return NULL;
 }
 
-void SkTypefaceCache::purge(int numToPurge) {
+void SkTypefaceCache::purge(int numToPurge, bool force) {
     int count = fArray.count();
     int i = 0;
     while (i < count) {
         SkTypeface* face = fArray[i].fFace;
         bool strong = fArray[i].fStrong;
-        if ((strong && face->unique()) || (!strong && face->weak_expired())) {
+        if (force || (strong && face->unique()) || (!strong && face->weak_expired())) {
             if (strong) {
                 face->unref();
             } else {
@@ -86,8 +101,8 @@ void SkTypefaceCache::purge(int numToPurge) {
     }
 }
 
-void SkTypefaceCache::purgeAll() {
-    this->purge(fArray.count());
+void SkTypefaceCache::purgeAll(bool force) {
+    this->purge(fArray.count(), force);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

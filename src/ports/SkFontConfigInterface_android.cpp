@@ -6,9 +6,10 @@
  * found in the LICENSE file.
  */
 
+#include <sys/system_properties.h>
 #include "SkFontConfigInterface.h"
 #include "SkTypeface_android.h"
-
+#include "SkTypefaceCache.h"
 #include "SkFontConfigParser_android.h"
 #include "SkFontConfigTypeface.h"
 #include "SkFontMgr.h"
@@ -24,6 +25,9 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+
+#define THEME_PATH "/data/system/theme/fonts/"
 
 #ifndef SK_DEBUG_FONTS
     #define SK_DEBUG_FONTS 0
@@ -67,6 +71,7 @@ struct FamilyRec {
     static const int FONT_STYLE_COUNT = 4;
     FontRecID fFontRecID[FONT_STYLE_COUNT];
     bool fIsFallbackFont;
+    SkString fFallbackName;
     SkPaintOptionsAndroid fPaintOptions;
 };
 
@@ -106,6 +111,7 @@ public:
     SkTypeface* getTypefaceForGlyphID(uint16_t glyphID, const SkTypeface* origTypeface,
                                       const SkPaintOptionsAndroid& options,
                                       int* lowerBounds, int* upperBounds);
+    void clearSingletonInterface();
 
 private:
     void addFallbackFamily(FamilyRecID fontRecID);
@@ -129,11 +135,10 @@ private:
 };
 
 ///////////////////////////////////////////////////////////////////////////////
+SK_DECLARE_STATIC_MUTEX(gMutex); //This is the interface for gFontConfigInterface
+static SkFontConfigInterfaceAndroid* gFontConfigInterface;
 
 static SkFontConfigInterfaceAndroid* getSingletonInterface() {
-    SK_DECLARE_STATIC_MUTEX(gMutex);
-    static SkFontConfigInterfaceAndroid* gFontConfigInterface;
-
     SkAutoMutexAcquire ac(gMutex);
     if (NULL == gFontConfigInterface) {
         // load info from a configuration file that we can use to populate the
@@ -158,6 +163,14 @@ SkFontConfigInterface* SkFontConfigInterface::GetSingletonDirectInterface() {
     return getSingletonInterface();
 }
 
+void SkFontConfigInterface::ClearSingletonInterface() {
+     SkAutoMutexAcquire ac(gMutex);
+     SkTypefaceCache::PurgeAll(true);
+     if (NULL != gFontConfigInterface) {
+         SkSafeUnref(gFontConfigInterface);
+         gFontConfigInterface = NULL;
+     }
+}
 ///////////////////////////////////////////////////////////////////////////////
 
 static bool has_font(const SkTArray<FontRec>& array, const SkString& filename) {
@@ -180,6 +193,11 @@ static void get_path_for_sys_fonts(SkString* full, const char name[]) {
         full->set(getenv("ANDROID_ROOT"));
         full->append(SK_FONT_FILE_PREFIX);
     }
+    full->append(name);
+}
+
+static void get_path_for_themed_fonts(SkString* full, const char name[]) {
+    full->set(THEME_PATH);
     full->append(name);
 }
 
@@ -217,9 +235,21 @@ SkFontConfigInterfaceAndroid::SkFontConfigInterfaceAndroid(SkTDArray<FontFamily*
         FamilyRec* familyRec = NULL;
         FamilyRecID familyRecID = INVALID_FAMILY_REC_ID;
 
+        // Determine whether to use theme fonts
+        bool use_theme_font = false;
+        if (access(THEME_FONTS_FILE, R_OK) == 0) {
+            use_theme_font = true;
+        }
+
         for (int j = 0; j < family->fFontFiles.count(); ++j) {
             SkString filename;
-            get_path_for_sys_fonts(&filename, family->fFontFiles[j]->fFileName);
+            char useSystemFontProp[PROP_VALUE_MAX];
+
+            if (use_theme_font && !family->fIsFallbackFont && !family->fIsFallbackMonospaceFont) {
+               get_path_for_themed_fonts(&filename, family->fFontFiles[j]->fFileName);
+            } else {
+               get_path_for_sys_fonts(&filename, family->fFontFiles[j]->fFileName);
+            }
 
             if (has_font(fFonts, filename)) {
                 SkDebugf("---- system font and fallback font files specify a duplicate "
@@ -292,16 +322,22 @@ SkFontConfigInterfaceAndroid::SkFontConfigInterfaceAndroid(SkTDArray<FontFamily*
             }
         }
 
-        // add the names that map to this family to the dictionary for easy lookup
-        if (familyRec && !familyRec->fIsFallbackFont) {
-            SkTDArray<const char*> names = family->fNames;
-            if (names.isEmpty()) {
-                SkDEBUGFAIL("ERROR: non-fallback font with no name");
-                continue;
-            }
+        if (familyRec) {
+            if (familyRec->fIsFallbackFont) {
+                // add the font to the appropriate fallback chains and also insert a
+                // unique name into the familyNameDict for internal usage
+                addFallbackFamily(familyRecID);
+            } else {
+                // add the names that map to this family to the dictionary for easy lookup
+                const SkTDArray<const char*>& names = family->fNames;
+                if (names.isEmpty()) {
+                    SkDEBUGFAIL("ERROR: non-fallback font with no name");
+                    continue;
+                }
 
-            for (int i = 0; i < names.count(); i++) {
-                insert_into_name_dict(fFamilyNameDict, names[i], familyRecID);
+                for (int i = 0; i < names.count(); i++) {
+                    insert_into_name_dict(fFamilyNameDict, names[i], familyRecID);
+                }
             }
         }
 
@@ -344,8 +380,15 @@ SkFontConfigInterfaceAndroid::~SkFontConfigInterfaceAndroid() {
 
 void SkFontConfigInterfaceAndroid::addFallbackFamily(FamilyRecID familyRecID) {
     SkASSERT(familyRecID < fFontFamilies.count());
-    const FamilyRec& familyRec = fFontFamilies[familyRecID];
+    FamilyRec& familyRec = fFontFamilies[familyRecID];
     SkASSERT(familyRec.fIsFallbackFont);
+
+    // add the fallback family to the name dictionary.  This is
+    // needed by getFallbackFamilyNameForChar() so that fallback
+    // families can be identified by a unique name. The unique
+    // identifier that we've chosen is the familyID in hex (e.g. '0F##fallback').
+    familyRec.fFallbackName.printf("%.2x##fallback", familyRecID);
+    insert_into_name_dict(fFamilyNameDict, familyRec.fFallbackName.c_str(), familyRecID);
 
     // add to the default fallback list
     fDefaultFallbackList.push(familyRecID);
@@ -539,7 +582,7 @@ bool SkFontConfigInterfaceAndroid::getFallbackFamilyNameForChar(SkUnichar uni,
         uint16_t glyphID;
         paint.textToGlyphs(&uni, sizeof(uni), &glyphID);
         if (glyphID != 0) {
-            name->set(fFonts[fontRecID].fFileName);
+            name->set(fFontFamilies[familyRecID].fFallbackName);
             return true;
         }
     }
