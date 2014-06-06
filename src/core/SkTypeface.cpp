@@ -94,17 +94,6 @@ SkTypeface* SkTypeface::GetDefaultTypeface(Style style) {
     return gDefaultTypefaces[style];
 }
 
-void SkTypeface::ClearCache() {
-    SkAutoMutexAcquire am(gMutex);
-    SkFontHost::ClearCache();
-    for(unsigned int i=0; i < FONT_STYLE_COUNT; i++) {
-       if (gDefaultTypefaces[i] != NULL) {
-           gDefaultTypefaces[i]->unref();
-           gDefaultTypefaces[i] = NULL;
-       }
-   }
-}
-
 SkTypeface* SkTypeface::RefDefault(Style style) {
     return SkRef(GetDefaultTypeface(style));
 }
@@ -275,10 +264,6 @@ SkAdvancedTypefaceMetrics* SkTypeface::getAdvancedTypefaceMetrics(
                                 const uint32_t* glyphIDs,
                                 uint32_t glyphIDsCount) const {
     return this->onGetAdvancedTypefaceMetrics(info, glyphIDs, glyphIDsCount);
-}
-
-SkTypeface* SkTypeface::refMatchingStyle(Style style) const {
-    return this->onRefMatchingStyle(style);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -119,13 +119,6 @@ SkFontID SkTypefaceCache::NewFontID() {
 
 SK_DECLARE_STATIC_MUTEX(gMutex);
 
-void SkTypefaceCache::Add(SkTypeface* face,
-                          SkTypeface::Style requestedStyle,
-                          bool strong) {
-    SkAutoMutexAcquire ama(gMutex);
-    Get().add(face, requestedStyle, strong);
-}
-
 SkTypeface* SkTypefaceCache::FindByID(SkFontID fontID) {
     SkAutoMutexAcquire ama(gMutex);
     return Get().findByID(fontID);
